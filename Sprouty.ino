@@ -33,7 +33,7 @@ RTC_DATA_ATTR bool rtc_valid = false;
 #define OLED_SDA 42
 #define OLED_SCL 41
 
-// --- Camera Pins Mapping ---
+// --- Camera Pins Mapping (Freenove S3) ---
 #define PWDN_GPIO_NUM -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM 15
@@ -56,14 +56,12 @@ String deviceID = "";
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 DHT dht(DHT_PIN, DHT_TYPE);
 
-// --- Light Mode Sprouty CSS ---
 const char* SPROUTY_CSS = R"rawliteral(
 <style>
   body { background-color: #ffffff !important; color: #000000; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 0; min-height: 100vh; }
   h1 { color: #2E6F40 !important; margin-bottom: 20px; font-size: 2.2em; }
   .wrap { background-color: #f9f9f9 !important; padding: 30px; border-radius: 15px; border: 1px solid #ddd; width: 90%; max-width: 380px; box-sizing: border-box; }
   button, input[type='submit'] { background-color: #2E6F40 !important; color: white !important; border: none !important; border-radius: 25px !important; padding: 15px !important; width: 100% !important; font-weight: bold !important; cursor: pointer; margin-top: 20px; }
-  .l { background: none !important; border: none !important; display: flex !important; align-items: center !important; justify-content: space-between !important; padding: 10px 5px !important; color: #333 !important; }
   input { background-color: #ffffff !important; border: 1px solid #2E6F40 !important; color: #000000 !important; border-radius: 8px !important; padding: 12px !important; width: 100%; box-sizing: border-box; }
 </style>
 )rawliteral";
@@ -90,27 +88,22 @@ void connectWiFi() {
     rtc_valid = false;
     delay(2000);
   }
-
   WiFi.mode(WIFI_STA);
-
   if (rtc_valid) {
     showStatus("Fast Connecting...");
     WiFi.begin(WiFi.SSID().c_str(), WiFi.psk().c_str(), rtc_channel, rtc_bssid);
     int timeout = 0;
     while (WiFi.status() != WL_CONNECTED && timeout < 25) { delay(100); timeout++; }
   }
-
   if (WiFi.status() != WL_CONNECTED) {
     showStatus("WiFi Setup Required", "Check your phone");
     WiFiManager wm;
     wm.setCustomHeadElement(SPROUTY_CSS);
     wm.setTitle("Sprouty Setup");
-    std::vector<const char *> menu = {"wifi"}; // Only show WiFi config
+    std::vector<const char *> menu = {"wifi"}; 
     wm.setMenu(menu);
     if (!wm.autoConnect("Sprouty-Setup")) { ESP.restart(); }
   }
-
-  // Cache WiFi for next wake
   rtc_channel = WiFi.channel();
   memcpy(rtc_bssid, WiFi.BSSID(), 6);
   rtc_valid = true;
@@ -120,6 +113,8 @@ void sendSensorData() {
   float hum = dht.readHumidity();
   float temp = dht.readTemperature();
   int moisture = analogRead(SOIL_PIN);
+  int moisturePercent = map(moisture, 4095, 2415, 0, 100);
+  moisturePercent = constrain(moisturePercent, 0, 100);
   
   if (isnan(hum) || isnan(temp)) { hum = 0.0; temp = 0.0; }
 
@@ -130,7 +125,7 @@ void sendSensorData() {
   http.addHeader("Content-Type", "application/json");
   
   String payload = "{\"sensorId\":\"" + deviceID + "\",";
-  payload += "\"moisture\":" + String(moisture) + ",";
+  payload += "\"moisture\":" + String(moisturePercent) + ",";
   payload += "\"temperature\":" + String(temp) + ",";
   payload += "\"humidity\":" + String(hum) + "}";
 
@@ -140,7 +135,7 @@ void sendSensorData() {
 }
 
 void sendImageData() {
-  showStatus("Taking Photo...", "Please wait");
+  showStatus("Taking HQ Photo...", "Resolution: SVGA");
   
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -157,11 +152,35 @@ void sendImageData() {
   config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_LATEST;
   config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.frame_size = FRAMESIZE_QVGA; 
-  config.jpeg_quality = 14; 
-  config.fb_count = 1;
+  
+  // --- HQ UPGRADES ---
+  config.frame_size = FRAMESIZE_SVGA; // 800x600
+  config.jpeg_quality = 10;           // Lower is higher quality (10 is very good)
+  config.fb_count = 2;
 
   if(esp_camera_init(&config) != ESP_OK) return;
+
+  // Sensor tuning for better colors
+  sensor_t * s = esp_camera_sensor_get();
+  s->set_brightness(s, 1);     // -2 to 2
+  s->set_ae_level(s, 1);       // Auto Exposure level: boost it (range -2 to 2)
+  s->set_contrast(s, 0);       // -2 to 2
+  s->set_saturation(s, 0);     // Higher saturation for green plants
+  s->set_whitebal(s, 1);       // Enable auto white balance
+  s->set_awb_gain(s, 1);       
+  
+  s->set_wb_mode(s, 0);
+  delay(2000); // Wait for sensor to adjust to light
+
+  // DISCARD 3 FRAMES to let the Auto-Exposure settle
+  for(int i = 0; i < 3; i++) {
+    camera_fb_t* fb_junk = esp_camera_fb_get();
+    if (fb_junk) {
+      esp_camera_fb_return(fb_junk);
+      delay(200); // Small gap between grabs
+    }
+  }
+
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) return;
 
@@ -182,7 +201,7 @@ void sendImageData() {
     client.write(fb->buf, fb->len);
     client.print(tail);
     
-    delay(500); 
+    delay(1000); // Extra time for larger SVGA packet
     client.stop();
   }
   esp_camera_fb_return(fb);
@@ -190,7 +209,6 @@ void sendImageData() {
 }
 
 void setup() {
-  // --- 1. INIT HARDWARE ---
   Serial.begin(115200);
   Wire.begin(OLED_SDA, OLED_SCL);
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
@@ -200,18 +218,13 @@ void setup() {
   deviceID = WiFi.macAddress();
   deviceID.replace(":", "");
 
-  // --- 2. EXECUTE TASKS ---
   connectWiFi();
-  
-  // Send data first (smaller packet, less power)
   sendSensorData();
 
-  // Send image every 12 hours
   if (hourCounter % IMAGE_INTERVAL_HOURS == 0) {
     sendImageData();
   }
 
-  // --- 3. FINISH AND SLEEP ---
   hourCounter = (hourCounter + DATA_INTERVAL_HOURS) % 24;
   showStatus("Task Complete!", "Sleeping 6 hours");
   delay(3000);
