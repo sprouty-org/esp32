@@ -17,8 +17,8 @@
 
 // --- NTP Settings ---
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 3600;
-const int   daylightOffset_sec = 0;
+const long gmtOffset_sec = 3600; 
+const int daylightOffset_sec = 0; 
 
 // --- Timing ---
 #define uS_TO_HOUR 3600000000ULL
@@ -59,6 +59,7 @@ String deviceID = "";
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 DHT dht(DHT_PIN, DHT_TYPE);
 
+// --- Custom WiFiManager CSS ---
 const char* SPROUTY_CSS = R"rawliteral(
 <style>
   body { background-color: #ffffff; color: #000000; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 0; min-height: 100vh; }
@@ -84,35 +85,37 @@ void showStatus(const char* line1, const char* line2 = "") {
 }
 
 void connectWiFi() {
+  WiFi.mode(WIFI_STA);
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+
   if (digitalRead(BOOT_BUTTON_PIN) == LOW) {
     showStatus("Resetting WiFi...");
-
     WiFiManager wm;
     wm.resetSettings();
-
     rtc_valid = false;
     delay(2000);
   }
 
-  WiFi.mode(WIFI_STA);
   if (rtc_valid) {
     WiFi.begin(WiFi.SSID().c_str(), WiFi.psk().c_str(), rtc_channel, rtc_bssid);
-    int timeout = 0;
-    while (WiFi.status() != WL_CONNECTED && timeout < 25) {
-      delay(100);
-      timeout++;
-    }
+  } else {
+    WiFi.begin();
+  }
+
+  int timeout = 0;
+  while (WiFi.status() != WL_CONNECTED && timeout < 80) {
+    delay(100);
+    timeout++;
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    showStatus("WiFi Setup Needed", "Connect to WiFi named\nSprouty-Setup");
-
+    showStatus("WiFi Portal Active", "Connect to:\nSprouty-Setup");
     WiFiManager wm;
     wm.setCustomHeadElement(SPROUTY_CSS);
     wm.setTitle("Sprouty Setup");
     std::vector<const char *> menu = {"wifi"}; 
     wm.setMenu(menu);
+    wm.setConfigPortalTimeout(180); 
     if (!wm.autoConnect("Sprouty-Setup")) {
       ESP.restart();
     }
@@ -124,26 +127,28 @@ void connectWiFi() {
 }
 
 void sendSensorData() {
+  int moisture = analogRead(SOIL_PIN);
+  int moisturePercent = map(moisture, 4095, 2415, 0, 100);
+  moisturePercent = constrain(moisturePercent, 0, 100);
+  
   float hum = dht.readHumidity();
   float temp = dht.readTemperature();
-  int moisturePercent = map(analogRead(SOIL_PIN), 4095, 2415, 0, 100);
-  moisturePercent = constrain(moisturePercent, 0, 100);
-
-  if (isnan(hum) || isnan(temp)) {
-    hum = 0.0;
-    temp = 0.0;
-  }
+  if (isnan(hum) || isnan(temp)) { hum = 0.0; temp = 0.0; }
 
   HTTPClient http;
   http.begin(SERVER_URL_DATA); 
   http.addHeader("Content-Type", "application/json");
-  String payload = "{\"sensorId\":\"" + deviceID + "\",\"moisture\":" + String(moisturePercent) + ",\"temperature\":" + String(temp) + ",\"humidity\":" + String(hum) + "}";
+  
+  String payload = "{\"sensorId\":\"" + deviceID + "\",";
+  payload += "\"moisture\":" + String(moisturePercent) + ",";
+  payload += "\"temperature\":" + String(temp) + ",";
+  payload += "\"humidity\":" + String(hum) + "}";
+                   
   http.POST(payload);
   http.end();
 }
 
 void sendImageData() {
-  showStatus("Noon Photo!");
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -172,18 +177,21 @@ void sendImageData() {
   config.fb_count = 2;
 
   if(esp_camera_init(&config) != ESP_OK) return;
+
   sensor_t * s = esp_camera_sensor_get();
   s->set_brightness(s, 1);
   s->set_ae_level(s, 1);
   s->set_whitebal(s, 1);
   s->set_wb_mode(s, 0);
 
-  delay(2000); 
+  delay(1500); 
 
   for(int i = 0; i < 3; i++) {
     camera_fb_t* fb_junk = esp_camera_fb_get();
-    if (fb_junk) esp_camera_fb_return(fb_junk);
-    delay(200);
+    if (fb_junk) {
+      esp_camera_fb_return(fb_junk);
+    }
+    delay(150);
   }
 
   camera_fb_t* fb = esp_camera_fb_get();
@@ -192,12 +200,26 @@ void sendImageData() {
   WiFiClient client;
   if (client.connect(SERVER_IP, SERVER_PORT)) {
     String boundary = "--------------------------ESP32Boundary";
-    String head = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"sensorId\"\r\n\r\n" + deviceID + "\r\n" +
-                  "--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"p.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+    String head = "--" + boundary + "\r\n";
+    head += "Content-Disposition: form-data; name=\"sensorId\"\r\n\r\n" + deviceID + "\r\n";
+    head += "--" + boundary + "\r\n";
+    head += "Content-Disposition: form-data; name=\"image\"; filename=\"p.jpg\"\r\n";
+    head += "Content-Type: image/jpeg\r\n\r\n";
+    
     String tail = "\r\n--" + boundary + "--\r\n";
-    client.print("POST " + String(SERVER_PATH_IMAGE) + " HTTP/1.1\r\nHost: " + String(SERVER_IP) + "\r\nContent-Type: multipart/form-data; boundary=" + boundary + "\r\nContent-Length: " + String(head.length() + fb->len + tail.length()) + "\r\nConnection: close\r\n\r\n");
-    client.print(head); client.write(fb->buf, fb->len); client.print(tail);
-    delay(1000); client.stop();
+
+    client.print("POST " + String(SERVER_PATH_IMAGE) + " HTTP/1.1\r\n");
+    client.print("Host: " + String(SERVER_IP) + "\r\n");
+    client.print("Content-Type: multipart/form-data; boundary=" + boundary + "\r\n");
+    client.print("Content-Length: " + String(head.length() + fb->len + tail.length()) + "\r\n");
+    client.print("Connection: close\r\n\r\n");
+                 
+    client.print(head); 
+    client.write(fb->buf, fb->len); 
+    client.print(tail);
+    
+    delay(1000); 
+    client.stop();
   }
   esp_camera_fb_return(fb);
   esp_camera_deinit();
@@ -207,34 +229,42 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(OLED_SDA, OLED_SCL);
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  
+  showStatus("Waking up...", "Checking sensors...");
+  
   dht.begin();
-
   deviceID = WiFi.macAddress();
   deviceID.replace(":", "");
 
   connectWiFi();
-
+  
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   struct tm timeinfo;
-  if(!getLocalTime(&timeinfo)) Serial.println("Time Fail");
+  bool timeValid = getLocalTime(&timeinfo);
 
   sendSensorData();
 
   uint64_t sleepUS = DATA_INTERVAL_HOURS * uS_TO_HOUR;
-  if (timeinfo.tm_hour == 12) {
-    sendImageData();
-  } else if (timeinfo.tm_hour >= 6 && timeinfo.tm_hour < 12) {
-    int minsToNoon = ((12 - timeinfo.tm_hour) * 60) - timeinfo.tm_min;
-    uint64_t usToNoon = (uint64_t)minsToNoon * 60 * 1000000ULL;
-    if (usToNoon < sleepUS) sleepUS = usToNoon;
+  
+  if (timeValid) {
+    if (timeinfo.tm_hour == 12) {
+      showStatus("Noon arrived!", "Taking photo...");
+      sendImageData();
+    } else if (timeinfo.tm_hour >= 6 && timeinfo.tm_hour < 12) {
+      int minsToNoon = ((12 - timeinfo.tm_hour) * 60) - timeinfo.tm_min;
+      uint64_t usToNoon = (uint64_t)minsToNoon * 60 * 1000000ULL;
+      if (usToNoon < sleepUS) {
+        sleepUS = usToNoon;
+      }
+    }
   }
 
   int waitMins = (int)(sleepUS / 60000000ULL);
   char buf[32];
-  sprintf(buf, "Next: %dh %dm", waitMins / 60, waitMins % 60);
-  showStatus("Sync Complete", buf);
+  sprintf(buf, "Next sync in: %dh %dm", waitMins / 60, waitMins % 60);
+  showStatus("Stats synced!", buf);
   
-  delay(5000);
+  delay(3000); 
   display.ssd1306_command(SSD1306_DISPLAYOFF);
   esp_sleep_enable_timer_wakeup(sleepUS);
   esp_deep_sleep_start();
