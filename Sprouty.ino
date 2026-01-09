@@ -10,9 +10,9 @@
 #include <time.h> 
 
 // --- Configuration ---
-#define SERVER_IP "10.117.113.22"
-#define SERVER_PORT 8080
-#define SERVER_URL_DATA "http://10.117.113.22:8080/sensors/data"
+#define SERVER_HOST "sprouty.duckdns.org"
+#define SERVER_PORT 80
+#define SERVER_URL_DATA "http://" SERVER_HOST "/sensors/data"
 #define SERVER_PATH_IMAGE "/sensors/image"
 
 // --- NTP Settings ---
@@ -198,7 +198,7 @@ void sendImageData() {
   if (!fb) return;
 
   WiFiClient client;
-  if (client.connect(SERVER_IP, SERVER_PORT)) {
+  if (client.connect(SERVER_HOST, SERVER_PORT)) {
     String boundary = "--------------------------ESP32Boundary";
     String head = "--" + boundary + "\r\n";
     head += "Content-Disposition: form-data; name=\"sensorId\"\r\n\r\n" + deviceID + "\r\n";
@@ -209,7 +209,7 @@ void sendImageData() {
     String tail = "\r\n--" + boundary + "--\r\n";
 
     client.print("POST " + String(SERVER_PATH_IMAGE) + " HTTP/1.1\r\n");
-    client.print("Host: " + String(SERVER_IP) + "\r\n");
+    client.print("Host: " + String(SERVER_HOST) + "\r\n");
     client.print("Content-Type: multipart/form-data; boundary=" + boundary + "\r\n");
     client.print("Content-Length: " + String(head.length() + fb->len + tail.length()) + "\r\n");
     client.print("Connection: close\r\n\r\n");
