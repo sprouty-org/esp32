@@ -10,9 +10,9 @@
 #include <time.h> 
 
 // --- Configuration ---
-#define SERVER_HOST "sprouty.duckdns.org"
-#define SERVER_PORT 80
-#define SERVER_URL_DATA "http://" SERVER_HOST "/sensors/data"
+#define SERVER_HOST "api.sprouty.org"
+#define SERVER_PORT 443 // Standard HTTPS Port
+#define SERVER_URL_DATA "https://" SERVER_HOST "/sensors/data"
 #define SERVER_PATH_IMAGE "/sensors/image"
 
 // --- NTP Settings ---
@@ -135,8 +135,11 @@ void sendSensorData() {
   float temp = dht.readTemperature();
   if (isnan(hum) || isnan(temp)) { hum = 0.0; temp = 0.0; }
 
+  WiFiClientSecure client;
+  client.setInsecure();
+
   HTTPClient http;
-  http.begin(SERVER_URL_DATA); 
+  http.begin(client, SERVER_URL_DATA); 
   http.addHeader("Content-Type", "application/json");
   
   String payload = "{\"sensorId\":\"" + deviceID + "\",";
@@ -197,7 +200,9 @@ void sendImageData() {
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) return;
 
-  WiFiClient client;
+  WiFiClientSecure client;
+  client.setInsecure();
+
   if (client.connect(SERVER_HOST, SERVER_PORT)) {
     String boundary = "--------------------------ESP32Boundary";
     String head = "--" + boundary + "\r\n";
